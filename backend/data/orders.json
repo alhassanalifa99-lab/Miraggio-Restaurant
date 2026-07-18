@@ -1,0 +1,78 @@
+[
+  {
+    "id": 1,
+    "order_number": 160,
+    "customer_name": "Test1",
+    "branch_id": 1,
+    "branch_name": "Miraggio Restaurant",
+    "location": "Asawasi Dogo moro park",
+    "total_amount": 25,
+    "status": "ready",
+    "created_at": "2026-07-18T03:36:53.297Z",
+    "confirmed_at": "2026-07-18T11:52:13.505Z",
+    "items": [
+      {
+        "menu_item_id": 1,
+        "quantity": 1,
+        "price": 25,
+        "item_name": "Classic Burger"
+      }
+    ],
+    "queue_number": 3
+  },
+  {
+    "id": 2,
+    "order_number": 695,
+    "customer_name": "Test2",
+    "branch_id": 1,
+    "branch_name": "Miraggio Restaurant",
+    "location": "Asawasi Dogo moro park",
+    "total_amount": 25,
+    "status": "ready",
+    "created_at": "2026-07-18T03:36:53.330Z",
+    "confirmed_at": "2026-07-18T11:52:11.205Z",
+    "items": [
+      {
+        "menu_item_id": 1,
+        "quantity": 1,
+        "price": 25,
+        "item_name": "Classic Burger"
+      }
+    ],
+    "queue_number": 2
+  },
+  {
+    "id": 3,
+    "order_number": 993,
+    "customer_name": "Ali",
+    "customer_phone": "",
+    "branch_id": 1,
+    "branch_name": "Miraggio Restaurant",
+    "location": "Asawasi Dogo moro park",
+    "delivery_type": "pickup",
+    "delivery_zone_name": null,
+    "delivery_fee": 0,
+    "items_total": 37,
+    "total_amount": 37,
+    "status": "ready",
+    "created_at": "2026-07-18T10:46:06.204Z",
+    "confirmed_at": "2026-07-18T11:52:09.231Z",
+    "items": [
+      {
+        "menu_item_id": 1,
+        "quantity": 1,
+        "price": 25,
+        "item_name": "Classic Burger",
+        "note": "No onions soft drinks fanta"
+      },
+      {
+        "menu_item_id": 10,
+        "quantity": 1,
+        "price": 12,
+        "item_name": "French Fries",
+        "note": "Plenty ketch up"
+      }
+    ],
+    "queue_number": 1
+  }
+]
