@@ -3,11 +3,10 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const fs = require('fs');
-const path = require('path');
+const pool = require('./db');
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
 // Change this in production, and never commit it to a public repo
 const WORKER_PASSWORD = process.env.WORKER_PASSWORD || 'fatawu123';
@@ -16,111 +15,18 @@ const WORKER_PASSWORD = process.env.WORKER_PASSWORD || 'fatawu123';
 app.use(cors());
 app.use(bodyParser.json());
 
-// Data file paths
-const dataDir = path.join(__dirname, 'data');
-const branchesFile = path.join(dataDir, 'branches.json');
-const menuFile = path.join(dataDir, 'menu.json');
-const ordersFile = path.join(dataDir, 'orders.json');
-const deliveryZonesFile = path.join(dataDir, 'delivery-zones.json');
-
-// Create data directory if it doesn't exist
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir);
-}
-
 // Single restaurant location (Miraggio has one branch only)
 const BRANCH_ID = 1;
 
-// Helper functions to read/write data
-function readData(filePath) {
-  try {
-    const data = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    console.error(`Error reading ${filePath}:`, error);
-    return [];
-  }
-}
-
-function writeData(filePath, data) {
-  try {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-  } catch (error) {
-    console.error(`Error writing ${filePath}:`, error);
-  }
-}
-
-// Initialize data files
-function initializeData() {
-  if (!fs.existsSync(branchesFile)) {
-    const branch = [
-      { id: BRANCH_ID, name: 'Miraggio Restaurant', location: 'Asawasi Dogo moro park', is_open: true }
-    ];
-    fs.writeFileSync(branchesFile, JSON.stringify(branch, null, 2));
-  }
-
-  if (!fs.existsSync(menuFile)) {
-    const menuItems = [
-      { id: 1, name: 'Classic Burger', description: 'Beef patty with lettuce, tomato, and special sauce', price: 25.00, category: 'Burgers', available: true },
-      { id: 2, name: 'Cheese Burger', description: 'Beef patty with cheese, lettuce, and tomato', price: 30.00, category: 'Burgers', available: true },
-      { id: 3, name: 'Chicken Burger', description: 'Crispy chicken fillet with coleslaw', price: 28.00, category: 'Burgers', available: true },
-      { id: 4, name: 'Jollof Rice', description: 'Flavorful jollof rice with chicken', price: 35.00, category: 'Rice Meals', available: true },
-      { id: 5, name: 'Fried Rice', description: 'Special fried rice with vegetables and chicken', price: 35.00, category: 'Rice Meals', available: true },
-      { id: 6, name: 'Waakye', description: 'Traditional waakye with wele, egg, and fish', price: 30.00, category: 'Rice Meals', available: true },
-      { id: 7, name: 'Soft Drink', description: 'Choice of soda', price: 8.00, category: 'Drinks', available: true },
-      { id: 8, name: 'Bottled Water', description: '500ml bottled water', price: 5.00, category: 'Drinks', available: true },
-      { id: 9, name: 'Fresh Juice', description: 'Orange or pineapple juice', price: 15.00, category: 'Drinks', available: true },
-      { id: 10, name: 'French Fries', description: 'Crispy golden fries', price: 12.00, category: 'Sides', available: true },
-      { id: 11, name: 'Plantain', description: 'Fried ripe plantain', price: 10.00, category: 'Sides', available: true },
-      { id: 12, name: 'Salad', description: 'Fresh garden salad', price: 12.00, category: 'Sides', available: true }
-    ];
-    fs.writeFileSync(menuFile, JSON.stringify(menuItems, null, 2));
-  }
-
-  if (!fs.existsSync(ordersFile)) {
-    fs.writeFileSync(ordersFile, JSON.stringify([], null, 2));
-  }
-
-  if (!fs.existsSync(deliveryZonesFile)) {
-    const zones = [
-      { id: 1, name: 'Asawasi (nearby)', fee: 5.00 },
-      { id: 2, name: 'Tamale Central / Aboabo', fee: 10.00 },
-      { id: 3, name: 'Sagnarigu / Kalpohin', fee: 15.00 },
-      { id: 4, name: 'Outside Tamale', fee: 25.00 }
-    ];
-    fs.writeFileSync(deliveryZonesFile, JSON.stringify(zones, null, 2));
-  }
-}
-
-initializeData();
-
-// One-time migration: if an old multi-branch file is still on disk, collapse it
-// down to the single Miraggio branch and repoint any existing orders at it.
-(function migrateToSingleBranch() {
-  const branches = readData(branchesFile);
-  if (branches.length > 1 || (branches[0] && branches[0].location !== 'Asawasi Dogo moro park')) {
-    const singleBranch = [
-      { id: BRANCH_ID, name: 'Miraggio Restaurant', location: 'Asawasi Dogo moro park', is_open: true }
-    ];
-    writeData(branchesFile, singleBranch);
-
-    const orders = readData(ordersFile);
-    const updatedOrders = orders.map(o => ({ ...o, branch_id: BRANCH_ID }));
-    writeData(ordersFile, updatedOrders);
-  }
-})();
-
 // Order numbers shown to customers (e.g. #223) are random, not sequential —
 // and only need to be unique among TODAY's orders, so they naturally
-// "reset" each day. The internal `id` field stays sequential/permanent and
-// is what everything else (status updates, lookups) is keyed on.
-function generateDailyOrderNumber(orders) {
-  const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const todaysNumbers = new Set(
-    orders
-      .filter(o => (o.created_at || '').slice(0, 10) === todayStr)
-      .map(o => o.order_number)
+// "reset" each day. The internal `id` (a Postgres serial) stays permanent
+// and is what everything else (status updates, lookups) is keyed on.
+async function generateDailyOrderNumber() {
+  const { rows } = await pool.query(
+    `select order_number from orders where created_at >= date_trunc('day', now())`
   );
+  const todaysNumbers = new Set(rows.map(r => r.order_number));
 
   let candidate;
   do {
@@ -145,13 +51,18 @@ function requireWorkerAuth(req, res, next) {
 // API Routes
 
 // Get the branch (single location)
-app.get('/api/branches', (req, res) => {
-  const branches = readData(branchesFile);
-  res.json(branches);
+app.get('/api/branches', async (req, res) => {
+  try {
+    const { rows } = await pool.query('select * from branches');
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching branches:', error.message);
+    res.status(500).json({ error: 'Failed to fetch branch' });
+  }
 });
 
 // Update branch open/closed status (worker only)
-app.patch('/api/branches/:id/status', requireWorkerAuth, (req, res) => {
+app.patch('/api/branches/:id/status', requireWorkerAuth, async (req, res) => {
   const { is_open } = req.body;
 
   if (typeof is_open !== 'boolean') {
@@ -159,31 +70,38 @@ app.patch('/api/branches/:id/status', requireWorkerAuth, (req, res) => {
   }
 
   try {
-    const branches = readData(branchesFile);
-    branches[0].is_open = is_open;
-    writeData(branchesFile, branches);
-
+    await pool.query('update branches set is_open = $1 where id = $2', [is_open, BRANCH_ID]);
     res.json({ success: true, is_open });
   } catch (error) {
-    console.error('Error updating branch status:', error);
+    console.error('Error updating branch status:', error.message);
     res.status(500).json({ error: 'Failed to update branch status' });
   }
 });
 
 // Get all menu items
-app.get('/api/menu', (req, res) => {
-  const menu = readData(menuFile).filter(item => item.available);
-  res.json(menu);
+app.get('/api/menu', async (req, res) => {
+  try {
+    const { rows } = await pool.query('select * from menu_items where available = true');
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching menu:', error.message);
+    res.status(500).json({ error: 'Failed to fetch menu' });
+  }
 });
 
 // Get delivery zones (public — customer picks one when checking out)
-app.get('/api/delivery-zones', (req, res) => {
-  const zones = readData(deliveryZonesFile);
-  res.json(zones);
+app.get('/api/delivery-zones', async (req, res) => {
+  try {
+    const { rows } = await pool.query('select * from delivery_zones');
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching delivery zones:', error.message);
+    res.status(500).json({ error: 'Failed to fetch delivery zones' });
+  }
 });
 
 // Create order
-app.post('/api/orders', (req, res) => {
+app.post('/api/orders', async (req, res) => {
   const { customer_name, customer_phone, items, delivery_type, delivery_zone_id } = req.body;
 
   if (!customer_name || !items || items.length === 0) {
@@ -195,25 +113,24 @@ app.post('/api/orders', (req, res) => {
   }
 
   try {
-    const menuItems = readData(menuFile);
-    const branches = readData(branchesFile);
-    const orders = readData(ordersFile);
-    const deliveryZones = readData(deliveryZonesFile);
+    const { rows: menuRows } = await pool.query('select * from menu_items');
+    const { rows: branchRows } = await pool.query('select * from branches where id = $1', [BRANCH_ID]);
 
-    const branch = branches[0];
+    const branch = branchRows[0];
     if (!branch || !branch.is_open) {
       return res.status(400).json({ error: 'Restaurant is currently closed' });
     }
 
     let itemsTotal = 0;
     const orderItems = items.map(item => {
-      const menuItem = menuItems.find(m => m.id === item.menu_item_id);
+      const menuItem = menuRows.find(m => m.id === item.menu_item_id);
       if (menuItem) {
-        itemsTotal += menuItem.price * item.quantity;
+        const price = parseFloat(menuItem.price);
+        itemsTotal += price * item.quantity;
         return {
           menu_item_id: item.menu_item_id,
           quantity: item.quantity,
-          price: menuItem.price,
+          price,
           item_name: menuItem.name,
           note: (item.note || '').trim().slice(0, 200) // e.g. "no onion", "Coke not Fanta"
         };
@@ -225,37 +142,40 @@ app.post('/api/orders', (req, res) => {
     let deliveryZone = null;
     let deliveryFee = 0;
     if (delivery_type === 'delivery') {
-      deliveryZone = deliveryZones.find(z => z.id === delivery_zone_id);
+      const { rows: zoneRows } = await pool.query('select * from delivery_zones where id = $1', [delivery_zone_id]);
+      deliveryZone = zoneRows[0];
       if (!deliveryZone) {
         return res.status(400).json({ error: 'Invalid delivery zone' });
       }
-      deliveryFee = deliveryZone.fee;
+      deliveryFee = parseFloat(deliveryZone.fee);
     }
 
     const total = itemsTotal + deliveryFee;
-    const orderNumber = generateDailyOrderNumber(orders);
+    const orderNumber = await generateDailyOrderNumber();
 
-    const newOrder = {
-      id: orders.length > 0 ? Math.max(...orders.map(o => o.id)) + 1 : 1,
-      order_number: orderNumber,
-      customer_name,
-      customer_phone,
-      branch_id: BRANCH_ID,
-      branch_name: branch.name,
-      location: branch.location,
-      delivery_type: delivery_type === 'delivery' ? 'delivery' : 'pickup',
-      delivery_zone_name: deliveryZone ? deliveryZone.name : null,
-      delivery_fee: deliveryFee,
-      items_total: itemsTotal,
-      total_amount: total,
-      status: 'pending',
-      created_at: new Date().toISOString(),
-      confirmed_at: null,
-      items: orderItems
-    };
+    const insertResult = await pool.query(
+      `insert into orders
+        (order_number, customer_name, customer_phone, branch_id, branch_name, location,
+         delivery_type, delivery_zone_name, delivery_fee, items_total, total_amount, status, items)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12)
+       returning id, order_number`,
+      [
+        orderNumber,
+        customer_name,
+        customer_phone,
+        BRANCH_ID,
+        branch.name,
+        branch.location,
+        delivery_type === 'delivery' ? 'delivery' : 'pickup',
+        deliveryZone ? deliveryZone.name : null,
+        deliveryFee,
+        itemsTotal,
+        total,
+        JSON.stringify(orderItems)
+      ]
+    );
 
-    orders.push(newOrder);
-    writeData(ordersFile, orders);
+    const newOrder = insertResult.rows[0];
 
     res.status(201).json({
       order_id: newOrder.id,
@@ -264,35 +184,28 @@ app.post('/api/orders', (req, res) => {
       status: 'pending'
     });
   } catch (error) {
-    console.error('Error creating order:', error);
+    console.error('Error creating order:', error.message);
     res.status(500).json({ error: 'Failed to create order' });
   }
 });
 
 // Get all orders (worker only)
-app.get('/api/orders', requireWorkerAuth, (req, res) => {
+app.get('/api/orders', requireWorkerAuth, async (req, res) => {
   const { status } = req.query;
 
-  const branches = readData(branchesFile);
-  const branch = branches[0];
-
-  let orders = readData(ordersFile).map(order => ({
-    ...order,
-    branch_name: branch ? branch.name : 'Unknown',
-    location: branch ? branch.location : 'Unknown'
-  }));
-
-  if (status) {
-    orders = orders.filter(order => order.status === status);
+  try {
+    const { rows } = status
+      ? await pool.query('select * from orders where status = $1 order by created_at desc', [status])
+      : await pool.query('select * from orders order by created_at desc');
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching orders:', error.message);
+    res.status(500).json({ error: 'Failed to fetch orders' });
   }
-
-  orders.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-  res.json(orders);
 });
 
 // Update order status (worker only)
-app.patch('/api/orders/:id/status', requireWorkerAuth, (req, res) => {
+app.patch('/api/orders/:id/status', requireWorkerAuth, async (req, res) => {
   const { status } = req.body;
   const orderId = parseInt(req.params.id);
 
@@ -301,88 +214,85 @@ app.patch('/api/orders/:id/status', requireWorkerAuth, (req, res) => {
   }
 
   try {
-    const orders = readData(ordersFile);
-    const orderIndex = orders.findIndex(o => o.id === orderId);
+    let updated;
 
-    if (orderIndex === -1) {
+    if (status === 'confirmed') {
+      const { rows: maxRows } = await pool.query(
+        `select coalesce(max(queue_number), 0) as max_queue from orders where status = 'confirmed'`
+      );
+      const nextQueueNumber = maxRows[0].max_queue + 1;
+
+      const { rows } = await pool.query(
+        `update orders set status = $1, confirmed_at = now(), queue_number = $2 where id = $3 returning *`,
+        [status, nextQueueNumber, orderId]
+      );
+      updated = rows[0];
+    } else {
+      const { rows } = await pool.query(
+        `update orders set status = $1 where id = $2 returning *`,
+        [status, orderId]
+      );
+      updated = rows[0];
+    }
+
+    if (!updated) {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    orders[orderIndex].status = status;
-    if (status === 'confirmed') {
-      orders[orderIndex].confirmed_at = new Date().toISOString();
-
-      const confirmedOrders = orders.filter(o => o.status === 'confirmed');
-      const maxQueueNumber = confirmedOrders.reduce((max, o) => Math.max(max, o.queue_number || 0), 0);
-      orders[orderIndex].queue_number = maxQueueNumber + 1;
-    }
-
-    if (status === 'completed' && orders[orderIndex].queue_number) {
-      const confirmedOrders = orders.filter(o =>
-        o.status === 'confirmed' && o.id !== orderId
+    // When order is completed, recycle queue numbers among remaining confirmed orders
+    if (status === 'completed' && updated.queue_number) {
+      const { rows: confirmedOrders } = await pool.query(
+        `select id from orders where status = 'confirmed' and id != $1 order by confirmed_at asc`,
+        [orderId]
       );
 
-      confirmedOrders.sort((a, b) => new Date(a.confirmed_at) - new Date(b.confirmed_at));
-
-      confirmedOrders.forEach((order, index) => {
-        const orderIdx = orders.findIndex(o => o.id === order.id);
-        if (orderIdx !== -1) {
-          orders[orderIdx].queue_number = index + 1;
-        }
-      });
+      for (let i = 0; i < confirmedOrders.length; i++) {
+        await pool.query('update orders set queue_number = $1 where id = $2', [i + 1, confirmedOrders[i].id]);
+      }
     }
 
-    writeData(ordersFile, orders);
-
-    res.json({ success: true, status, queue_number: orders[orderIndex].queue_number });
+    res.json({ success: true, status, queue_number: updated.queue_number });
   } catch (error) {
-    console.error('Error updating order:', error);
+    console.error('Error updating order:', error.message);
     res.status(500).json({ error: 'Failed to update order' });
   }
 });
 
-// Get single order (public — used for order tracking)
-app.get('/api/orders/:id', (req, res) => {
+// Get single order (public — used for order confirmation page)
+app.get('/api/orders/:id', async (req, res) => {
   const orderId = parseInt(req.params.id);
-  const orders = readData(ordersFile);
-  const branches = readData(branchesFile);
 
-  const order = orders.find(o => o.id === orderId);
-
-  if (!order) {
-    return res.status(404).json({ error: 'Order not found' });
+  try {
+    const { rows } = await pool.query('select * from orders where id = $1', [orderId]);
+    if (!rows[0]) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    res.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching order:', error.message);
+    res.status(500).json({ error: 'Failed to fetch order' });
   }
-
-  const branch = branches[0];
-  if (branch) {
-    order.branch_name = branch.name;
-    order.location = branch.location;
-  }
-
-  res.json(order);
 });
 
 // Track order by order_number (public — used by the customer tracking page,
 // so it does NOT require worker auth and does not expose other customers' data
 // beyond what a customer already sees on their own confirmation page).
-app.get('/api/orders/track/:orderNumber', (req, res) => {
+app.get('/api/orders/track/:orderNumber', async (req, res) => {
   const orderNumber = parseInt(String(req.params.orderNumber).replace(/^0+/, ''), 10);
-  const orders = readData(ordersFile);
-  const branches = readData(branchesFile);
 
-  const order = orders.find(o => o.order_number === orderNumber);
-
-  if (!order) {
-    return res.status(404).json({ error: 'Order not found' });
+  try {
+    const { rows } = await pool.query(
+      'select * from orders where order_number = $1 order by created_at desc limit 1',
+      [orderNumber]
+    );
+    if (!rows[0]) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    res.json(rows[0]);
+  } catch (error) {
+    console.error('Error tracking order:', error.message);
+    res.status(500).json({ error: 'Failed to fetch order' });
   }
-
-  const branch = branches[0];
-  if (branch) {
-    order.branch_name = branch.name;
-    order.location = branch.location;
-  }
-
-  res.json(order);
 });
 
 // Worker login — checks password, returns a token to use as Bearer auth
@@ -406,8 +316,8 @@ app.post('/api/payment/momo/initiate', async (req, res) => {
   }
 
   try {
-    const orders = readData(ordersFile);
-    const order = orders.find(o => o.id === parseInt(order_id));
+    const { rows } = await pool.query('select * from orders where id = $1', [parseInt(order_id)]);
+    const order = rows[0];
 
     if (!order) {
       return res.status(404).json({ error: 'Order not found' });
@@ -421,9 +331,10 @@ app.post('/api/payment/momo/initiate', async (req, res) => {
       payeeNote: `Payment for order #${order.order_number}`
     });
 
-    order.momo_reference_id = referenceId;
-    order.payment_status = 'pending';
-    writeData(ordersFile, orders);
+    await pool.query(
+      'update orders set momo_reference_id = $1, payment_status = $2 where id = $3',
+      [referenceId, 'pending', order.id]
+    );
 
     res.json({ reference_id: referenceId, status: 'pending' });
   } catch (error) {
@@ -440,12 +351,10 @@ app.get('/api/payment/momo/status/:referenceId', async (req, res) => {
     const status = result.status.toLowerCase(); // successful | failed | pending
 
     // Keep the order's stored payment_status in sync
-    const orders = readData(ordersFile);
-    const order = orders.find(o => o.momo_reference_id === req.params.referenceId);
-    if (order) {
-      order.payment_status = status;
-      writeData(ordersFile, orders);
-    }
+    await pool.query(
+      'update orders set payment_status = $1 where momo_reference_id = $2',
+      [status, req.params.referenceId]
+    );
 
     res.json({ status });
   } catch (error) {
