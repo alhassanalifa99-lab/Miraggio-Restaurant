@@ -1,24 +1,24 @@
 [
   {
     "id": 1,
-    "name": "Miraggio Burger",
-    "description": "Beef patty with lettuce, tomato, and special sauce",
+    "name": "Plain Rice",
+    "description": "Pain Rice with beef stew",
     "price": 25,
-    "category": "Burgers",
+    "category": "Rice Meals",
     "available": true
   },
   {
     "id": 2,
-    "name": "Special Burger",
-    "description": "Beef patty with cheese, lettuce, and tomato",
+    "name": "Fried Rice",
+    "description": "Flavorful Fried Rice with chicken",
     "price": 30,
-    "category": "Burgers",
+    "category": "Rice Meals",
     "available": true
   },
   {
     "id": 3,
-    "name": "Assorted Ghana Jollof Rice",
-    "description": "Flavorful jollof rice with chicken and vegetables and Gizard",
+    "name": "Assorted Fried Rice",
+    "description": "Flavorful Fried Rice with chicken and vegetables and Gizard",
     "price": 50,
     "category": "Rice Meals",
     "available": true
