@@ -363,6 +363,170 @@ app.get('/api/payment/momo/status/:referenceId', async (req, res) => {
   }
 });
 
+// ---- Paystack Checkout Flow ----
+// Payment happens BEFORE the order is created — so an abandoned or failed
+// payment never creates a row in `orders` and never shows up on the worker
+// dashboard. The order is only created once /checkout/verify confirms
+// Paystack actually received the money.
+const paystack = require('./paystack');
+
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+// Start checkout: validates the cart, computes the real total server-side,
+// and starts a Paystack transaction. Returns a URL to redirect the customer to.
+app.post('/api/checkout/initiate', async (req, res) => {
+  const { customer_name, customer_phone, items, delivery_type, delivery_zone_id } = req.body;
+
+  if (!customer_name || !items || items.length === 0) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  if (delivery_type === 'delivery' && !delivery_zone_id) {
+    return res.status(400).json({ error: 'delivery_zone_id is required for delivery orders' });
+  }
+
+  try {
+    const { rows: menuRows } = await pool.query('select * from menu_items');
+    const { rows: branchRows } = await pool.query('select * from branches where id = $1', [BRANCH_ID]);
+
+    const branch = branchRows[0];
+    if (!branch || !branch.is_open) {
+      return res.status(400).json({ error: 'Restaurant is currently closed' });
+    }
+
+    let itemsTotal = 0;
+    const orderItems = items.map(item => {
+      const menuItem = menuRows.find(m => m.id === item.menu_item_id);
+      if (menuItem) {
+        const price = parseFloat(menuItem.price);
+        itemsTotal += price * item.quantity;
+        return {
+          menu_item_id: item.menu_item_id,
+          quantity: item.quantity,
+          price,
+          item_name: menuItem.name,
+          note: (item.note || '').trim().slice(0, 200)
+        };
+      }
+      return null;
+    }).filter(Boolean);
+
+    let deliveryZone = null;
+    let deliveryFee = 0;
+    if (delivery_type === 'delivery') {
+      const { rows: zoneRows } = await pool.query('select * from delivery_zones where id = $1', [delivery_zone_id]);
+      deliveryZone = zoneRows[0];
+      if (!deliveryZone) {
+        return res.status(400).json({ error: 'Invalid delivery zone' });
+      }
+      deliveryFee = parseFloat(deliveryZone.fee);
+    }
+
+    const total = itemsTotal + deliveryFee;
+
+    // Paystack requires an email even though this app never collects one —
+    // this placeholder is only used by Paystack internally, never shown to
+    // the customer or the restaurant.
+    const email = `guest+${Date.now()}@miraggio-orders.local`;
+
+    const transaction = await paystack.initializeTransaction({
+      email,
+      amountGHS: total,
+      callbackUrl: `${FRONTEND_URL}/payment-callback`,
+      metadata: {
+        customer_name,
+        customer_phone,
+        delivery_type: delivery_type === 'delivery' ? 'delivery' : 'pickup',
+        delivery_zone_name: deliveryZone ? deliveryZone.name : null,
+        delivery_fee: deliveryFee,
+        items_total: itemsTotal,
+        items: orderItems
+      }
+    });
+
+    res.json({
+      authorization_url: transaction.authorization_url,
+      reference: transaction.reference
+    });
+  } catch (error) {
+    console.error('Checkout initiate error:', error.response?.data || error.message);
+    res.status(500).json({ error: error.message || 'Failed to start checkout' });
+  }
+});
+
+// Called by the frontend after Paystack redirects the customer back.
+// Confirms payment actually succeeded, THEN creates the order.
+app.get('/api/checkout/verify/:reference', async (req, res) => {
+  const { reference } = req.params;
+
+  try {
+    // Idempotency: if this reference already created an order (e.g. the
+    // customer refreshed the callback page), just return that same order
+    // instead of creating a duplicate.
+    const { rows: existing } = await pool.query(
+      'select id, order_number, total_amount from orders where payment_reference = $1',
+      [reference]
+    );
+    if (existing[0]) {
+      return res.json({
+        order_id: existing[0].id,
+        order_number: existing[0].order_number,
+        total_amount: existing[0].total_amount,
+        status: 'pending'
+      });
+    }
+
+    const transaction = await paystack.verifyTransaction(reference);
+
+    if (transaction.status !== 'success') {
+      return res.status(400).json({ error: 'Payment was not successful', payment_status: transaction.status });
+    }
+
+    const metadata = transaction.metadata || {};
+    const { rows: branchRows } = await pool.query('select * from branches where id = $1', [BRANCH_ID]);
+    const branch = branchRows[0];
+
+    const totalAmount = transaction.amount / 100; // Paystack amount is in pesewas
+    const orderNumber = await generateDailyOrderNumber();
+
+    const insertResult = await pool.query(
+      `insert into orders
+        (order_number, customer_name, customer_phone, branch_id, branch_name, location,
+         delivery_type, delivery_zone_name, delivery_fee, items_total, total_amount, status,
+         items, payment_status, payment_reference)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12,'paid',$13)
+       returning id, order_number`,
+      [
+        orderNumber,
+        metadata.customer_name || 'Guest',
+        metadata.customer_phone || null,
+        BRANCH_ID,
+        branch ? branch.name : 'Miraggio Restaurant',
+        branch ? branch.location : 'Asawasi Dogo moro park',
+        metadata.delivery_type || 'pickup',
+        metadata.delivery_zone_name || null,
+        metadata.delivery_fee || 0,
+        metadata.items_total || totalAmount,
+        totalAmount,
+        JSON.stringify(metadata.items || []),
+        reference
+      ]
+    );
+
+    const newOrder = insertResult.rows[0];
+
+    res.json({
+      order_id: newOrder.id,
+      order_number: newOrder.order_number,
+      total_amount: totalAmount,
+      status: 'pending'
+    });
+  } catch (error) {
+    console.error('Checkout verify error:', error.response?.data || error.message);
+    res.status(500).json({ error: error.message || 'Failed to verify payment' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
