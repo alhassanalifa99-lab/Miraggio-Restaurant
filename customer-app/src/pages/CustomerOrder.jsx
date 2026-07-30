@@ -14,6 +14,7 @@ function CustomerOrder() {
   const [deliveryZoneId, setDeliveryZoneId] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [checkoutError, setCheckoutError] = useState('');
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -96,6 +97,7 @@ function CustomerOrder() {
       return;
     }
 
+    setCheckoutError('');
     setSubmitting(true);
     try {
       const orderData = {
@@ -113,14 +115,22 @@ function CustomerOrder() {
       // Payment happens before the order is created — this only starts a
       // Paystack transaction and redirects there. The order itself gets
       // created after payment succeeds (see PaymentCallback.jsx).
+      // Payment happens before the order is created — this only starts a
+      // Paystack transaction and redirects there. The order itself gets
+      // created after payment succeeds (see PaymentCallback.jsx).
       const response = await axios.post('/api/checkout/initiate', orderData);
       window.location.href = response.data.authorization_url;
     } catch (error) {
       console.error('Error starting checkout:', error);
-      if (error.response?.data?.error === 'Restaurant is currently closed') {
-        alert('Sorry, we are currently closed. Please check back later.');
+      const backendMessage = error.response?.data?.error || '';
+
+      if (backendMessage === 'Restaurant is currently closed') {
+        setCheckoutError('Sorry, we are currently closed. Please check back later.');
+      } else if (backendMessage.toLowerCase().includes('paystack is not configured')) {
+        // Internal config detail — don't show this raw message to customers
+        setCheckoutError('Online payment is temporarily unavailable. Please contact the restaurant directly to place your order, or try again later.');
       } else {
-        alert(error.response?.data?.error || 'Failed to submit order. Please try again.');
+        setCheckoutError(backendMessage || 'Something went wrong starting checkout. Please try again.');
       }
     } finally {
       setSubmitting(false);
@@ -336,6 +346,12 @@ function CustomerOrder() {
                       className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                     />
                   </div>
+
+                  {checkoutError && (
+                    <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2 rounded-md">
+                      {checkoutError}
+                    </div>
+                  )}
 
                   <button
                     onClick={handleSubmitOrder}
