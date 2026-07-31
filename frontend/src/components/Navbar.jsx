@@ -9,7 +9,7 @@ function Navbar() {
           <Link to="/" className="flex items-center space-x-2">
             <Bike className="w-8 h-8 text-primary" />
             <div>
-              <h1 className="text-xl font-bold">Miraggio Restaurant</h1>
+              <h1 className="text-xl font-bold">Zooya Foods</h1>
               <p className="text-xs text-gray-300">Fast Food Restaurant</p>
             </div>
           </Link>
